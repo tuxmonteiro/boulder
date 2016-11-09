@@ -54,8 +54,8 @@ type OCSPUpdater struct {
 	ocspMinTimeToExpiry time.Duration
 	// Used to calculate how far back missing SCT receipts should be looked for
 	oldestIssuedSCT time.Duration
-	// Number of CT logs we expect to have receipts from
-	numLogs int
+	// Logs we expect to have SCT receipts for. Missing logs will be resubmitted to.
+	logs []cmd.LogDescription
 
 	loops []*looper
 
@@ -73,7 +73,7 @@ func newUpdater(
 	pub core.Publisher,
 	sac core.StorageAuthority,
 	config cmd.OCSPUpdaterConfig,
-	numLogs int,
+	logs []cmd.LogDescription,
 	issuerPath string,
 	log blog.Logger,
 ) (*OCSPUpdater, error) {
@@ -96,7 +96,7 @@ func newUpdater(
 		log:                 log,
 		sac:                 sac,
 		pubc:                pub,
-		numLogs:             numLogs,
+		logs:                logs,
 		ocspMinTimeToExpiry: config.OCSPMinTimeToExpiry.Duration,
 		oldestIssuedSCT:     config.OldestIssuedSCT.Duration,
 	}
@@ -472,14 +472,44 @@ func (updater *OCSPUpdater) getSerialsIssuedSince(since time.Time, batchSize int
 	return allSerials, nil
 }
 
-func (updater *OCSPUpdater) getNumberOfReceipts(serial string) (int, error) {
-	var count int
-	err := updater.dbMap.SelectOne(
-		&count,
-		"SELECT COUNT(id) FROM sctReceipts WHERE certificateSerial = :serial",
+// getSubmittedReceipts returns the IDs of the CT logs that have returned a SCT
+// receipt for the given certificate serial
+func (updater *OCSPUpdater) getSubmittedReceipts(serial string) ([]string, error) {
+	fmt.Printf("getSubmittedReceipts(%#v)\n", serial)
+
+	var logIDs []string
+	_, err := updater.dbMap.Select(
+		&logIDs,
+		`SELECT logID
+		FROM sctReceipts
+		WHERE certificateSerial = :serial`,
 		map[string]interface{}{"serial": serial},
 	)
-	return count, err
+	if err != nil {
+		fmt.Printf("Err: %#v\n", err)
+	}
+	fmt.Printf("Log IDs: %#v\n", logIDs)
+	return logIDs, err
+}
+
+// missingLogIDs examines a list of log IDs that have given a SCT receipt for
+// a certificate and returns a list of the configured log IDs that are not
+// present. This is the set of logs we need to provide a missing certificate.
+func (updater *OCSPUpdater) missingLogIDs(logIDs []string) []string {
+	var missingIDs []string
+
+	presentMap := make(map[string]bool)
+	for _, logID := range logIDs {
+		presentMap[logID] = true
+	}
+
+	for _, logDesc := range updater.logs {
+		if _, present := presentMap[logDesc.Key]; !present {
+			missingIDs = append(missingIDs, logDesc.Key)
+		}
+	}
+
+	return missingIDs
 }
 
 // missingReceiptsTick looks for certificates without the correct number of SCT
@@ -494,20 +524,33 @@ func (updater *OCSPUpdater) missingReceiptsTick(ctx context.Context, batchSize i
 	}
 
 	for _, serial := range serials {
-		count, err := updater.getNumberOfReceipts(serial)
+		fmt.Printf("missingReceiptsTick() for %#v. calling getSubmittedReceipts on %#v\n", serial, updater)
+		// First find the logIDs that have provided a SCT for the serial
+		logIDs, err := updater.getSubmittedReceipts(serial)
 		if err != nil {
-			updater.log.AuditErr(fmt.Sprintf("Failed to get number of SCT receipts for certificate: %s", err))
+			fmt.Printf("Err was not nill: %#v\n", err)
+			updater.log.AuditErr(fmt.Sprintf("Failed to get CT log IDs of SCT receipts for certificate: %s", err))
 			continue
 		}
-		if count >= updater.numLogs {
+
+		// Next, check if any of our configured CT logs are missing from that list
+		// of log IDs
+		missingIDs := updater.missingLogIDs(logIDs)
+		if len(missingIDs) == 0 {
+			// If there's no logs missing there's nothing to be done
 			continue
 		}
+
+		// Otherwise, we need to get the certificate & submit it to each of the
+		// missing logs to obtain SCTs.
 		cert, err := updater.sac.GetCertificate(ctx, serial)
 		if err != nil {
 			updater.log.AuditErr(fmt.Sprintf("Failed to get certificate: %s", err))
 			continue
 		}
-		_ = updater.pubc.SubmitToCT(ctx, cert.DER)
+		for _, logID := range missingIDs {
+			_ = updater.pubc.SubmitToSingleCT(ctx, logID, cert.DER)
+		}
 	}
 	return nil
 }
@@ -640,7 +683,7 @@ func main() {
 		sac,
 		// Necessary evil for now
 		conf,
-		len(c.Common.CT.Logs),
+		c.Common.CT.Logs,
 		c.Common.IssuerCert,
 		auditlogger,
 	)

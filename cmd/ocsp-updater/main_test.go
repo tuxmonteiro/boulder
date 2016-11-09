@@ -4,6 +4,7 @@ import (
 	"crypto/x509"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -41,6 +42,7 @@ type mockPub struct {
 }
 
 func (p *mockPub) SubmitToCT(_ context.Context, _ []byte) error {
+	fmt.Printf("mockPub.SubmitToCT() called.\n")
 	sct := core.SignedCertificateTimestamp{
 		SCTVersion:        0,
 		LogID:             "id",
@@ -55,6 +57,20 @@ func (p *mockPub) SubmitToCT(_ context.Context, _ []byte) error {
 	}
 	sct.LogID = "another-id"
 	return p.sa.AddSCTReceipt(ctx, sct)
+}
+
+func (p *mockPub) SubmitToSingleCT(_ context.Context, logID string, _ []byte) error {
+	fmt.Printf("mockPub.SubmitToSingleCT(logID: %q)\n", logID)
+	sct := core.SignedCertificateTimestamp{
+		SCTVersion:        0,
+		LogID:             logID,
+		Timestamp:         0,
+		Extensions:        []byte{},
+		Signature:         []byte{0},
+		CertificateSerial: "00",
+	}
+	err := p.sa.AddSCTReceipt(ctx, sct)
+	return err
 }
 
 var log = blog.UseMock()
@@ -87,7 +103,12 @@ func setup(t *testing.T) (*OCSPUpdater, core.StorageAuthority, *gorp.DbMap, cloc
 			OldOCSPWindow:           cmd.ConfigDuration{Duration: time.Second},
 			MissingSCTWindow:        cmd.ConfigDuration{Duration: time.Second},
 		},
-		0,
+		[]cmd.LogDescription{
+			cmd.LogDescription{
+				URI: "test",
+				Key: "test",
+			},
+		},
 		"",
 		blog.NewMock(),
 	)
@@ -264,7 +285,7 @@ func TestMissingReceiptsTick(t *testing.T) {
 	_, err = sa.AddCertificate(ctx, parsedCert.Raw, reg.ID)
 	test.AssertNotError(t, err, "Couldn't add test-cert.pem")
 
-	updater.numLogs = 1
+	//updater.numLogs = 1
 	updater.oldestIssuedSCT = 2 * time.Hour
 
 	serials, err := updater.getSerialsIssuedSince(fc.Now().Add(-2*time.Hour), 1)
@@ -274,13 +295,13 @@ func TestMissingReceiptsTick(t *testing.T) {
 	err = updater.missingReceiptsTick(ctx, 5)
 	test.AssertNotError(t, err, "Failed to run missingReceiptsTick")
 
-	count, err := updater.getNumberOfReceipts("00")
-	test.AssertNotError(t, err, "Couldn't get number of receipts")
-	test.AssertEquals(t, count, 2)
+	logIDs, err := updater.getSubmittedReceipts("00")
+	test.AssertNotError(t, err, "Couldn't get submitted receipts for serial 00")
+	test.AssertEquals(t, len(logIDs), 2)
 
 	// make sure we don't spin forever after reducing the
 	// number of logs we submit to
-	updater.numLogs = 1
+	//updater.numLogs = 1
 	err = updater.missingReceiptsTick(ctx, 10)
 	test.AssertNotError(t, err, "Failed to run missingReceiptsTick")
 }
@@ -317,7 +338,7 @@ func TestMissingReceiptsTickTerminate(t *testing.T) {
 	// conditions that cause the termination bug described in
 	// https://github.com/letsencrypt/boulder/issues/1872 are met
 	updater.dbMap = inexhaustibleDB{}
-	updater.numLogs = 1
+	//updater.numLogs = 1
 	updater.oldestIssuedSCT = 2 * time.Hour
 
 	// Note: Must use a batch size larger than the # of rows returned by
