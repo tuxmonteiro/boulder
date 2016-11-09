@@ -285,7 +285,16 @@ func TestMissingReceiptsTick(t *testing.T) {
 	_, err = sa.AddCertificate(ctx, parsedCert.Raw, reg.ID)
 	test.AssertNotError(t, err, "Couldn't add test-cert.pem")
 
-	//updater.numLogs = 1
+	updater.logs = []cmd.LogDescription{
+		cmd.LogDescription{
+			URI: "test",
+			Key: "test",
+		},
+		cmd.LogDescription{
+			URI: "test2",
+			Key: "test2",
+		},
+	}
 	updater.oldestIssuedSCT = 2 * time.Hour
 
 	serials, err := updater.getSerialsIssuedSince(fc.Now().Add(-2*time.Hour), 1)
@@ -295,13 +304,19 @@ func TestMissingReceiptsTick(t *testing.T) {
 	err = updater.missingReceiptsTick(ctx, 5)
 	test.AssertNotError(t, err, "Failed to run missingReceiptsTick")
 
+	// We have two logs configured, we expect to find two log IDs
 	logIDs, err := updater.getSubmittedReceipts("00")
 	test.AssertNotError(t, err, "Couldn't get submitted receipts for serial 00")
 	test.AssertEquals(t, len(logIDs), 2)
 
 	// make sure we don't spin forever after reducing the
 	// number of logs we submit to
-	//updater.numLogs = 1
+	updater.logs = []cmd.LogDescription{
+		cmd.LogDescription{
+			URI: "test",
+			Key: "test",
+		},
+	}
 	err = updater.missingReceiptsTick(ctx, 10)
 	test.AssertNotError(t, err, "Failed to run missingReceiptsTick")
 }
