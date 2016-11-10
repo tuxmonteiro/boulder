@@ -475,7 +475,7 @@ func (updater *OCSPUpdater) getSerialsIssuedSince(since time.Time, batchSize int
 // getSubmittedReceipts returns the IDs of the CT logs that have returned a SCT
 // receipt for the given certificate serial
 func (updater *OCSPUpdater) getSubmittedReceipts(serial string) ([]string, error) {
-	fmt.Printf("getSubmittedReceipts(%#v)\n", serial)
+	//fmt.Printf("getSubmittedReceipts(%#v)\n", serial)
 
 	var logIDs []string
 	_, err := updater.dbMap.Select(
@@ -485,10 +485,10 @@ func (updater *OCSPUpdater) getSubmittedReceipts(serial string) ([]string, error
 		WHERE certificateSerial = :serial`,
 		map[string]interface{}{"serial": serial},
 	)
-	if err != nil {
-		fmt.Printf("Err: %#v\n", err)
-	}
-	fmt.Printf("Log IDs: %#v\n", logIDs)
+	//if err != nil {
+	//fmt.Printf("Err: %#v\n", err)
+	//}
+	//fmt.Printf("Log IDs: %#v\n", logIDs)
 	return logIDs, err
 }
 
@@ -524,11 +524,11 @@ func (updater *OCSPUpdater) missingReceiptsTick(ctx context.Context, batchSize i
 	}
 
 	for _, serial := range serials {
-		fmt.Printf("missingReceiptsTick() for %#v. calling getSubmittedReceipts on %#v\n", serial, updater)
+		//fmt.Printf("missingReceiptsTick() for %#v. calling getSubmittedReceipts on %#v\n", serial, updater)
 		// First find the logIDs that have provided a SCT for the serial
 		logIDs, err := updater.getSubmittedReceipts(serial)
 		if err != nil {
-			fmt.Printf("Err was not nill: %#v\n", err)
+			//fmt.Printf("Err was not nill: %#v\n", err)
 			updater.log.AuditErr(fmt.Sprintf("Failed to get CT log IDs of SCT receipts for certificate: %s", err))
 			continue
 		}
